@@ -1,9 +1,11 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/url"
+	"strings"
 	"time"
 
 	"github.com/cybaka520/AMLLHub-Music-API/pkg/client"
@@ -23,54 +25,54 @@ func NewMusicAPI(httpClient *client.HTTPClient) *MusicAPI {
 }
 
 // Parse 解析单曲
-func (m *MusicAPI) Parse(songInput string, level string) (*models.MusicResponse, error) {
+func (m *MusicAPI) Parse(ctx context.Context, songInput string, level string) (*models.MusicResponse, error) {
 	// 参数验证
 	if songInput == "" {
-		return &models.MusicResponse{Code: 400, Error: "必须提供 ids 或 url 参数"}, nil
+		return nil, models.NewAPIError(400, "必须提供 ids 或 url 参数")
 	}
 	if level == "" {
-		return &models.MusicResponse{Code: 400, Error: "level参数为空"}, nil
+		return nil, models.NewAPIError(400, "level参数为空")
 	}
 
 	// 提取歌曲ID
 	songID, err := utils.ExtractSongID(songInput)
 	if err != nil || songID == "" {
-		return &models.MusicResponse{Code: 400, Error: "无法从输入解析有效的歌曲ID"}, nil
+		return nil, models.NewAPIError(400, "无法从输入解析有效的歌曲ID")
 	}
 
 	// 获取歌曲URL
-	urlData, err := m.getSongURL(songID, level)
+	urlData, err := m.getSongURL(ctx, songID, level)
 	if err != nil {
-		return &models.MusicResponse{Code: 500, Error: err.Error()}, nil
+		return nil, fmt.Errorf("获取歌曲链接失败: %w", err)
 	}
 
 	if urlData == nil || len(urlData.Data) == 0 || urlData.Data[0].URL == "" {
-		return &models.MusicResponse{Code: 400, Error: "获取歌曲链接信息失败"}, nil
+		return nil, models.NewAPIError(400, "获取歌曲链接信息失败")
 	}
 
 	urlInfo := urlData.Data[0]
 	songIDFromURL := fmt.Sprintf("%d", urlInfo.ID)
 
 	// 获取歌曲详情
-	songDetail, err := m.getSongDetail(songIDFromURL)
+	songDetail, err := m.getSongDetail(ctx, songIDFromURL)
 	if err != nil || songDetail == nil || len(songDetail.Songs) == 0 {
-		return &models.MusicResponse{Code: 400, Error: "获取歌曲名称等详细信息失败"}, nil
+		return nil, models.NewAPIError(400, "获取歌曲名称等详细信息失败")
 	}
 
 	songInfo := songDetail.Songs[0]
 
-	// 获取歌词
-	lyricData, _ := m.getLyric(songIDFromURL)
+	// 获取歌词（歌词失败不影响主流程）
+	lyricData, _ := m.getLyric(ctx, songIDFromURL)
 
 	// 构建响应
 	resp := &models.MusicResponse{
-		Code:       200,
-		Name:       songInfo.Name,
-		Pic:        songInfo.Al.PicURL,
-		AlbumName:  songInfo.Al.Name,
-		Level:      utils.FormatLevel(urlInfo.Level),
-		Size:       utils.FormatFileSize(urlInfo.Size),
-		URL:        replaceHTTPtoHTTPS(urlInfo.URL),
+		Code:      200,
+		Name:      songInfo.Name,
+		Pic:       songInfo.Al.PicURL,
+		AlbumName: songInfo.Al.Name,
+		Level:     utils.FormatLevel(urlInfo.Level),
+		Size:      utils.FormatFileSize(urlInfo.Size),
+		URL:       replaceHTTPtoHTTPS(urlInfo.URL),
 	}
 
 	// 构建歌手名
@@ -78,7 +80,7 @@ func (m *MusicAPI) Parse(songInput string, level string) (*models.MusicResponse,
 	for _, ar := range songInfo.Ar {
 		artistNames = append(artistNames, ar.Name)
 	}
-	resp.ArtistName = joinStrings(artistNames, "/")
+	resp.ArtistName = strings.Join(artistNames, "/")
 
 	// 歌词
 	if lyricData != nil {
@@ -101,25 +103,28 @@ type urlV1Response struct {
 }
 
 // getSongURL 获取歌曲播放链接（eapi加密接口）
-func (m *MusicAPI) getSongURL(songID string, level string) (*urlV1Response, error) {
+func (m *MusicAPI) getSongURL(ctx context.Context, songID string, level string) (*urlV1Response, error) {
 	apiURL := "https://interface3.music.163.com/eapi/song/enhance/player/url/v1"
 	apiPath := "/api/song/enhance/player/url/v1"
 
 	config := map[string]interface{}{
-		"os":        "android",
-		"appver":    "9.3.90",
+		"os":        client.DefaultOS,
+		"appver":    client.DefaultAppVer,
 		"osver":     "",
-		"deviceId":  "pyncm!",
+		"deviceId":  client.DefaultDevice,
 		"requestId": client.RandomRequestID(),
 	}
 
-	configJSON, _ := json.Marshal(config)
+	configJSON, err := json.Marshal(config)
+	if err != nil {
+		return nil, fmt.Errorf("序列化请求头失败: %w", err)
+	}
 
 	payload := map[string]interface{}{
-		"ids":         []string{songID},
-		"level":       level,
-		"encodeType":  "flac",
-		"header":      string(configJSON),
+		"ids":        []string{songID},
+		"level":      level,
+		"encodeType": "flac",
+		"header":     string(configJSON),
 	}
 
 	if level == "sky" {
@@ -133,7 +138,7 @@ func (m *MusicAPI) getSongURL(songID string, level string) (*urlV1Response, erro
 	}
 
 	// 发送请求
-	body, err := m.httpClient.PostEAPI(apiURL, encryptedParams, nil)
+	body, err := m.httpClient.PostEAPI(ctx, apiURL, encryptedParams, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -141,7 +146,7 @@ func (m *MusicAPI) getSongURL(songID string, level string) (*urlV1Response, erro
 	// 解析响应
 	var result urlV1Response
 	if err := json.Unmarshal(body, &result); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("解析歌曲URL响应失败: %w", err)
 	}
 
 	return &result, nil
@@ -162,25 +167,43 @@ type songDetailResponse struct {
 	} `json:"songs"`
 }
 
+// songDetailCriteria 用于安全构造 c 参数的 JSON
+type songDetailCriteria struct {
+	ID string `json:"id"`
+	V  int    `json:"v"`
+}
+
 // getSongDetail 获取歌曲详细信息（带重试）
-func (m *MusicAPI) getSongDetail(songID string) (*songDetailResponse, error) {
+func (m *MusicAPI) getSongDetail(ctx context.Context, songID string) (*songDetailResponse, error) {
 	apiURL := "https://interface3.music.163.com/api/v3/song/detail"
+
+	// 用 json.Marshal 安全构造 c 参数，避免注入
+	criteria := []songDetailCriteria{{ID: songID, V: 0}}
+	cJSON, err := json.Marshal(criteria)
+	if err != nil {
+		return nil, fmt.Errorf("序列化查询条件失败: %w", err)
+	}
+
 	data := url.Values{}
-	data.Set("c", fmt.Sprintf(`[{"id":"%s","v":0}]`, songID))
+	data.Set("c", string(cJSON))
 
 	var lastErr error
 	for attempt := 0; attempt < 3; attempt++ {
-		body, err := m.httpClient.PostForm(apiURL, data, nil)
+		body, err := m.httpClient.PostForm(ctx, apiURL, data, nil)
 		if err != nil {
 			lastErr = err
-			time.Sleep(time.Duration(attempt+1) * time.Second)
+			if sleepErr := sleepCtx(ctx, time.Duration(attempt+1)*time.Second); sleepErr != nil {
+				return nil, sleepErr
+			}
 			continue
 		}
 
 		var result songDetailResponse
 		if err := json.Unmarshal(body, &result); err != nil {
 			lastErr = err
-			time.Sleep(time.Duration(attempt+1) * time.Second)
+			if sleepErr := sleepCtx(ctx, time.Duration(attempt+1)*time.Second); sleepErr != nil {
+				return nil, sleepErr
+			}
 			continue
 		}
 
@@ -189,7 +212,9 @@ func (m *MusicAPI) getSongDetail(songID string) (*songDetailResponse, error) {
 		}
 
 		lastErr = fmt.Errorf("歌曲详情为空")
-		time.Sleep(time.Duration(attempt+1) * time.Second)
+		if sleepErr := sleepCtx(ctx, time.Duration(attempt+1)*time.Second); sleepErr != nil {
+			return nil, sleepErr
+		}
 	}
 
 	return nil, lastErr
@@ -197,8 +222,8 @@ func (m *MusicAPI) getSongDetail(songID string) (*songDetailResponse, error) {
 
 // lyricResponse 歌词API响应
 type lyricResponse struct {
-	Code   int `json:"code"`
-	Lrc    struct {
+	Code int `json:"code"`
+	Lrc  struct {
 		Lyric string `json:"lyric"`
 	} `json:"lrc"`
 	Tlyric struct {
@@ -207,7 +232,7 @@ type lyricResponse struct {
 }
 
 // getLyric 获取歌词
-func (m *MusicAPI) getLyric(songID string) (*lyricResponse, error) {
+func (m *MusicAPI) getLyric(ctx context.Context, songID string) (*lyricResponse, error) {
 	apiURL := "https://interface3.music.163.com/api/song/lyric"
 	data := url.Values{}
 	data.Set("id", songID)
@@ -220,27 +245,20 @@ func (m *MusicAPI) getLyric(songID string) (*lyricResponse, error) {
 	data.Set("ytv", "0")
 	data.Set("yrv", "0")
 
-	body, err := m.httpClient.PostForm(apiURL, data, nil)
+	body, err := m.httpClient.PostForm(ctx, apiURL, data, nil)
 	if err != nil {
 		return nil, err
 	}
 
 	var result lyricResponse
 	if err := json.Unmarshal(body, &result); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("解析歌词响应失败: %w", err)
 	}
 
 	return &result, nil
 }
 
-// joinStrings 用分隔符连接字符串切片
-func joinStrings(parts []string, sep string) string {
-	if len(parts) == 0 {
-		return ""
-	}
-	result := parts[0]
-	for i := 1; i < len(parts); i++ {
-		result += sep + parts[i]
-	}
-	return result
+// replaceHTTPtoHTTPS 将 http:// 替换为 https://
+func replaceHTTPtoHTTPS(s string) string {
+	return strings.Replace(s, "http://", "https://", 1)
 }

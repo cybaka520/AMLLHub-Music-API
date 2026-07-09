@@ -2,10 +2,10 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/url"
-	"strings"
 	"time"
 
 	"github.com/cybaka520/AMLLHub-Music-API/pkg/client"
@@ -24,10 +24,10 @@ func NewSearchAPI(httpClient *client.HTTPClient) *SearchAPI {
 }
 
 // Search 搜索音乐
-func (s *SearchAPI) Search(keywords string, limit int) (*models.SearchResponse, error) {
+func (s *SearchAPI) Search(ctx context.Context, keywords string, limit int) (*models.SearchResponse, error) {
 	// 参数验证
 	if keywords == "" {
-		return &models.SearchResponse{Code: 400, Error: "请提供歌曲名称"}, nil
+		return nil, models.NewAPIError(400, "请提供歌曲名称")
 	}
 	limit = clamp(limit, 1, 100)
 
@@ -38,15 +38,15 @@ func (s *SearchAPI) Search(keywords string, limit int) (*models.SearchResponse, 
 	)
 
 	// 发送请求
-	body, err := s.httpClient.PostSearch(reqURL)
+	body, err := s.httpClient.PostSearch(ctx, reqURL)
 	if err != nil {
-		return &models.SearchResponse{Code: 500, Error: err.Error()}, nil
+		return nil, fmt.Errorf("搜索请求失败: %w", err)
 	}
 
 	// 解析原始响应
 	var raw searchRawResponse
 	if err := json.Unmarshal(body, &raw); err != nil {
-		return &models.SearchResponse{Code: 500, Error: "解析响应失败"}, nil
+		return nil, fmt.Errorf("解析搜索响应失败: %w", err)
 	}
 
 	// 构建格式化响应
@@ -149,9 +149,4 @@ func clamp(value, min, max int) int {
 		return max
 	}
 	return value
-}
-
-// replaceHTTPtoHTTPS 将 http:// 替换为 https://
-func replaceHTTPtoHTTPS(s string) string {
-	return strings.Replace(s, "http://", "https://", 1)
 }

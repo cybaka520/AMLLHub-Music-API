@@ -12,6 +12,7 @@ var numericRegex = regexp.MustCompile(`^\d+$`)
 // ExtractSongID 从输入中提取歌曲ID
 // 支持纯数字、music.163.com URL、163cn.tv 短链接
 // 注意：短链接需要调用方先获取重定向URL，此函数不处理短链接跳转
+// 当输入既非纯数字也非可识别的 URL 时返回错误，避免无效输入流向下游 API。
 func ExtractSongID(input string) (string, error) {
 	input = strings.TrimSpace(input)
 	if input == "" {
@@ -41,8 +42,7 @@ func ExtractSongID(input string) (string, error) {
 		}
 	}
 
-	// 无法解析，假定输入已经是ID
-	return input, nil
+	return "", fmt.Errorf("无法从输入解析有效的歌曲ID: %q", input)
 }
 
 // ExtractPlaylistID 从输入中提取歌单ID
@@ -98,15 +98,36 @@ func ParseCookie(text string) map[string]string {
 	return cookies
 }
 
-// BuildCookieString 将 cookie map 转为字符串
+// escapeCookieValue 对 cookie 值做最小化转义。
+// 仅转义会破坏 cookie 解析的字符（分号、逗号、空格、控制字符、反斜杠、双引号），
+// 空格编码为 %20（而非 query 的 +），其余字符保持原样以保证与服务端语义一致。
+func escapeCookieValue(s string) string {
+	var b strings.Builder
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case c < 0x20 || c == 0x7f:
+			// 控制字符
+			fmt.Fprintf(&b, "%%%02X", c)
+		case c == ';' || c == ',' || c == '"' || c == '\\' || c == ' ':
+			fmt.Fprintf(&b, "%%%02X", c)
+		default:
+			b.WriteByte(c)
+		}
+	}
+	return b.String()
+}
+
+// BuildCookieString 将 cookie map 转为字符串。
+// key 视为受控的 cookie 名（不做转义），value 用 escapeCookieValue 转义。
 func BuildCookieString(cookies map[string]string) string {
 	if len(cookies) == 0 {
 		return ""
 	}
 
-	var parts []string
+	parts := make([]string, 0, len(cookies))
 	for key, value := range cookies {
-		parts = append(parts, url.QueryEscape(key)+"="+url.QueryEscape(value))
+		parts = append(parts, key+"="+escapeCookieValue(value))
 	}
 	return strings.Join(parts, "; ")
 }

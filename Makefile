@@ -6,11 +6,11 @@ build:
 
 # 运行单元测试
 test:
-	go test ./tests/... -v
+	go test ./...
 
 # 运行性能测试
 bench:
-	go test -bench=. ./tests/...
+	go test -bench=. ./...
 
 # 代码静态检查
 vet:
@@ -18,7 +18,7 @@ vet:
 
 # 运行测试并生成覆盖率报告
 cover:
-	go test ./tests/... -coverprofile=coverage.out
+	go test ./... -coverprofile=coverage.out
 	go tool cover -html=coverage.out -o coverage.html
 
 # 清理

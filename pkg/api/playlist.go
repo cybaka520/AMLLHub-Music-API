@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/url"
@@ -22,26 +23,26 @@ func NewPlaylistAPI(httpClient *client.HTTPClient) *PlaylistAPI {
 }
 
 // Parse 解析歌单
-func (p *PlaylistAPI) Parse(input string) (*models.PlaylistResponse, error) {
+func (p *PlaylistAPI) Parse(ctx context.Context, input string) (*models.PlaylistResponse, error) {
 	// 参数验证
 	if input == "" {
-		return &models.PlaylistResponse{Code: 400, Error: "缺少歌单ID参数"}, nil
+		return nil, models.NewAPIError(400, "缺少歌单ID参数")
 	}
 
 	// 提取歌单ID
 	playlistID, err := utils.ExtractPlaylistID(input)
 	if err != nil || playlistID == "" {
-		return &models.PlaylistResponse{Code: 400, Error: "无法从输入中提取有效的歌单ID"}, nil
+		return nil, models.NewAPIError(400, "无法从输入中提取有效的歌单ID")
 	}
 
 	// 获取歌单数据
-	playlistData, err := p.fetchPlaylistData(playlistID)
+	playlistData, err := p.fetchPlaylistData(ctx, playlistID)
 	if err != nil {
-		return &models.PlaylistResponse{Code: 500, Error: err.Error()}, nil
+		return nil, fmt.Errorf("获取歌单数据失败: %w", err)
 	}
 
 	if playlistData.Code != 200 {
-		return &models.PlaylistResponse{Code: playlistData.Code, Error: "歌单解析失败"}, nil
+		return nil, models.NewAPIError(playlistData.Code, "歌单解析失败")
 	}
 
 	// 提取所有 trackIds
@@ -55,7 +56,7 @@ func (p *PlaylistAPI) Parse(input string) (*models.PlaylistResponse, error) {
 	// 如果有 trackIds，获取所有歌曲的详细信息
 	var fetchedTracks []models.Track
 	if len(trackIDs) > 0 {
-		fetchedTracks, err = p.fetchSongsData(trackIDs)
+		fetchedTracks, err = p.fetchSongsData(ctx, trackIDs)
 		if err == nil && len(fetchedTracks) > 0 {
 			playlistData.Playlist.TrackCount = len(fetchedTracks)
 		}
@@ -113,29 +114,40 @@ type rawTrack struct {
 }
 
 // fetchPlaylistData 获取歌单数据
-func (p *PlaylistAPI) fetchPlaylistData(playlistID string) (*playlistRawResponse, error) {
-	apiURL := fmt.Sprintf("https://interface3.music.163.com/api/v6/playlist/detail?id=%s", playlistID)
+func (p *PlaylistAPI) fetchPlaylistData(ctx context.Context, playlistID string) (*playlistRawResponse, error) {
+	// 使用 url.Values 对 playlistID 做编码，避免特殊字符破坏 URL
+	q := url.Values{}
+	q.Set("id", playlistID)
+	apiURL := "https://interface3.music.163.com/api/v6/playlist/detail?" + q.Encode()
 
-	body, err := p.httpClient.Get(apiURL)
+	body, err := p.httpClient.Get(ctx, apiURL)
 	if err != nil {
 		return nil, err
 	}
 
 	var result playlistRawResponse
 	if err := json.Unmarshal(body, &result); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("解析歌单响应失败: %w", err)
 	}
 
 	return &result, nil
 }
 
+// songDetailItem 用于批量构造 c 参数的 JSON（ID 为数值）
+type songDetailItem struct {
+	ID int64 `json:"id"`
+	V  int   `json:"v"`
+}
+
 // fetchSongsData 获取多首歌曲的详细信息
-func (p *PlaylistAPI) fetchSongsData(trackIDs []int64) ([]models.Track, error) {
+// 返回成功获取的歌曲列表；若全部 chunk 失败则返回 error。
+func (p *PlaylistAPI) fetchSongsData(ctx context.Context, trackIDs []int64) ([]models.Track, error) {
 	if len(trackIDs) == 0 {
 		return nil, nil
 	}
 
 	var tracks []models.Track
+	var chunkErrors []error
 
 	// 网易云API限制每次最多获取1000首歌曲详情
 	chunkSize := 1000
@@ -146,18 +158,24 @@ func (p *PlaylistAPI) fetchSongsData(trackIDs []int64) ([]models.Track, error) {
 		}
 		chunk := trackIDs[i:end]
 
-		// 构建 POST 数据
-		var idsJSON []string
+		// 用 json.Marshal 安全构造 c 参数，避免注入
+		criteria := make([]songDetailItem, 0, len(chunk))
 		for _, id := range chunk {
-			idsJSON = append(idsJSON, fmt.Sprintf(`{"id":"%d"}`, id))
+			criteria = append(criteria, songDetailItem{ID: id, V: 0})
+		}
+		cJSON, err := json.Marshal(criteria)
+		if err != nil {
+			chunkErrors = append(chunkErrors, fmt.Errorf("序列化 chunk 失败: %w", err))
+			continue
 		}
 
 		apiURL := "https://music.163.com/api/v3/song/detail"
 		data := url.Values{}
-		data.Set("c", "["+joinStrings(idsJSON, ",")+"]")
+		data.Set("c", string(cJSON))
 
-		body, err := p.httpClient.PostForm(apiURL, data, nil)
+		body, err := p.httpClient.PostForm(ctx, apiURL, data, nil)
 		if err != nil {
+			chunkErrors = append(chunkErrors, fmt.Errorf("chunk[%d-%d] 请求失败: %w", i, end-1, err))
 			continue
 		}
 
@@ -166,6 +184,7 @@ func (p *PlaylistAPI) fetchSongsData(trackIDs []int64) ([]models.Track, error) {
 			Songs []rawTrack `json:"songs"`
 		}
 		if err := json.Unmarshal(body, &result); err != nil {
+			chunkErrors = append(chunkErrors, fmt.Errorf("chunk[%d-%d] 解析失败: %w", i, end-1, err))
 			continue
 		}
 
@@ -184,6 +203,11 @@ func (p *PlaylistAPI) fetchSongsData(trackIDs []int64) ([]models.Track, error) {
 				tracks = append(tracks, track)
 			}
 		}
+	}
+
+	// 全部 chunk 失败时返回错误
+	if len(tracks) == 0 && len(chunkErrors) > 0 {
+		return nil, fmt.Errorf("所有歌曲详情请求失败: %v", chunkErrors)
 	}
 
 	return tracks, nil

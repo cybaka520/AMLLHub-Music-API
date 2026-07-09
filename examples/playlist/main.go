@@ -1,17 +1,19 @@
 package main
 
 import (
+	"context"
 	"fmt"
 
 	netease "github.com/cybaka520/AMLLHub-Music-API/pkg"
 )
 
 func main() {
+	ctx := context.Background()
 	token := "MUSIC_U=xxxxx"
 	client := netease.NewClient(token)
 
 	// 解析歌单
-	playlist, err := client.ParsePlaylist("歌单ID")
+	playlist, err := client.ParsePlaylist(ctx, "歌单ID")
 	if err != nil {
 		fmt.Println("解析失败:", err)
 		return

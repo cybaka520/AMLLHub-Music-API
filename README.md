@@ -14,21 +14,23 @@ go get github.com/cybaka520/AMLLHub-Music-API
 package main
 
 import (
+    "context"
     "fmt"
     netease "github.com/cybaka520/AMLLHub-Music-API/pkg"
 )
 
 func main() {
+    ctx := context.Background()
     client := netease.NewClient("MUSIC_U=xxxxx")
 
     // 搜索音乐
-    result, _ := client.Search("周杰伦", 10)
+    result, _ := client.Search(ctx, "周杰伦", 10)
     for _, song := range result.Data {
         fmt.Printf("%s - %s\n", song.Name, song.Artists[0].Name)
     }
 
     // 解析单曲
-    music, _ := client.ParseMusic("123456", "lossless")
+    music, _ := client.ParseMusic(ctx, "123456", "lossless")
     fmt.Printf("URL: %s\n", music.URL)
 }
 ```
@@ -39,7 +41,7 @@ func main() {
 
 创建客户端，需一个 Token。
 
-### `Search(keywords string, limit int) (*SearchResponse, error)`
+### `Search(ctx context.Context, keywords string, limit int) (*SearchResponse, error)`
 
 搜索音乐。
 
@@ -48,7 +50,7 @@ func main() {
 | keywords | 搜索关键词 | 非空    |
 | limit    | 返回数量  | 1-100 |
 
-### `ParseMusic(songID string, level string) (*MusicResponse, error)`
+### `ParseMusic(ctx context.Context, songID string, level string) (*MusicResponse, error)`
 
 解析单曲，返回播放链接、歌词等信息。
 
@@ -57,7 +59,7 @@ func main() {
 | songID | 歌曲ID或URL |
 | level  | 音质等级     |
 
-### `ParsePlaylist(playlistID string) (*PlaylistResponse, error)`
+### `ParsePlaylist(ctx context.Context, playlistID string) (*PlaylistResponse, error)`
 
 解析歌单，返回歌单详情和完整歌曲列表。
 

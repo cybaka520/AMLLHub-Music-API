@@ -1,18 +1,21 @@
 package main
 
 import (
+	"context"
 	"fmt"
 
 	netease "github.com/cybaka520/AMLLHub-Music-API/pkg"
 )
 
 func main() {
+	ctx := context.Background()
+
 	// 创建客户端（仅需Token）
 	token := "MUSIC_U=xxxxx; NMTID=xxxxx"
 	client := netease.NewClient(token)
 
 	// 搜索音乐
-	result, err := client.Search("周杰伦", 10)
+	result, err := client.Search(ctx, "周杰伦", 10)
 	if err != nil {
 		fmt.Println("搜索失败:", err)
 		return
@@ -30,7 +33,7 @@ func main() {
 	// 解析单曲
 	if len(result.Data) > 0 {
 		songID := fmt.Sprintf("%d", result.Data[0].ID)
-		music, err := client.ParseMusic(songID, "lossless")
+		music, err := client.ParseMusic(ctx, songID, "lossless")
 		if err != nil {
 			fmt.Println("解析失败:", err)
 			return
