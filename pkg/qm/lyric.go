@@ -32,11 +32,34 @@ type lyricParam struct {
 
 // lyricRaw 是歌词接口响应，字段为 hex 密文。
 type lyricRaw struct {
-	Lyric string  `json:"lyric"`
-	QRC   string  `json:"qrc"`
+	Lyric flexStr `json:"lyric"`
+	QRC   flexStr `json:"qrc"`
 	QRCT  flexInt `json:"qrc_t"` // 0 表示 lyric 解出来是 LRC，非 0 表示是 QRC
-	Trans string  `json:"trans"`
-	Roma  string  `json:"roma"`
+	Trans flexStr `json:"trans"`
+	Roma  flexStr `json:"roma"`
+}
+
+// flexStr 兼容上游把「无内容」的歌词字段写成数字 0 的情况（匿名请求常见）。
+// 若按 string 强解，整个响应会因一个字段类型不符而解析失败，LRC 也就一起丢了。
+type flexStr string
+
+// UnmarshalJSON 接受字符串、数字与 null，非字符串一律视为空。
+func (f *flexStr) UnmarshalJSON(b []byte) error {
+	s := strings.TrimSpace(string(b))
+	if s == "" || s == "null" {
+		*f = ""
+		return nil
+	}
+	if s[0] != '"' {
+		*f = ""
+		return nil
+	}
+	var v string
+	if err := json.Unmarshal(b, &v); err != nil {
+		return err
+	}
+	*f = flexStr(v)
+	return nil
 }
 
 // GetLyric 获取歌词：LRC + QRC + 翻译 + 罗马音。
@@ -67,16 +90,16 @@ func (c *Client) GetLyric(ctx context.Context, songID int64, name, artist, album
 	}
 
 	out := &Lyric{
-		Translation: decodeLyricField(raw.Trans),
-		Romaji:      decodeLyricField(raw.Roma),
+		Translation: decodeLyricField(string(raw.Trans)),
+		Romaji:      decodeLyricField(string(raw.Roma)),
 	}
 
-	main := decodeLyricField(raw.Lyric)
+	main := decodeLyricField(string(raw.Lyric))
 	if raw.QRCT != 0 {
-		out.QRC = firstNonEmpty(decodeLyricField(raw.QRC), main)
+		out.QRC = firstNonEmpty(decodeLyricField(string(raw.QRC)), main)
 	} else {
 		out.LRC = main
-		out.QRC = decodeLyricField(raw.QRC)
+		out.QRC = decodeLyricField(string(raw.QRC))
 	}
 
 	// QRC 命中时再要一次 LRC 兜底，失败不影响。
@@ -85,7 +108,7 @@ func (c *Client) GetLyric(ctx context.Context, songID int64, name, artist, album
 		alt.QRC = 0
 		alt.QRCT = 0
 		if plain, err := c.fetchLyric(ctx, alt); err == nil {
-			out.LRC = decodeLyricField(plain.Lyric)
+			out.LRC = decodeLyricField(string(plain.Lyric))
 		}
 	}
 	return out, nil
