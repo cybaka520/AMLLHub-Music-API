@@ -1,6 +1,6 @@
 # AMLLHub-Music-API
 
-纯 Go 实现的网易云音乐解析库。
+纯 Go 实现的音乐库。
 
 ## 安装
 
