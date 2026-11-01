@@ -3,7 +3,6 @@ package qm
 import (
 	"bytes"
 	"compress/zlib"
-	"crypto/des"
 	"encoding/hex"
 	"testing"
 )
@@ -22,20 +21,12 @@ func encryptQRC(t *testing.T, plain string) string {
 	}
 
 	data := buf.Bytes()
-	if r := len(data) % des.BlockSize; r != 0 {
-		data = append(data, make([]byte, des.BlockSize-r)...)
+	if r := len(data) % 8; r != 0 {
+		data = append(data, make([]byte, 8-r)...)
 	}
 
-	block, err := des.NewTripleDESCipher(qrcKey)
-	if err != nil {
-		t.Fatalf("构造 3DES 失败: %v", err)
-	}
-
-	out := make([]byte, len(data))
-	for i := 0; i < len(data); i += block.BlockSize() {
-		block.Encrypt(out[i:i+block.BlockSize()], data[i:i+block.BlockSize()])
-	}
-	return hex.EncodeToString(out)
+	// 必须用 QQ 专有的 3DES 实现加密，标准库 crypto/des 与它不是同一套算法
+	return hex.EncodeToString(qrcTripleDESEncrypt(data, qrcKey))
 }
 
 // TestDecryptQRCRoundTrip 验证 zlib 分支的加解密闭环。

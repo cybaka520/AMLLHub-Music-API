@@ -299,3 +299,16 @@ func qrcTripleDESDecrypt(encryptedData, key []byte) []byte {
 	}
 	return out
 }
+
+// qrcTripleDESEncrypt 是对应的加密方向，仅供测试构造样本。
+func qrcTripleDESEncrypt(plainData, key []byte) []byte {
+	schedule := tripleDesKeySetup(key, desEncrypt)
+	out := make([]byte, 0, len(plainData))
+
+	for i := 0; i+8 <= len(plainData); i += 8 {
+		block := make([]byte, 8)
+		copy(block, plainData[i:i+8])
+		out = append(out, tripleDesCrypt(block, schedule)...)
+	}
+	return out
+}
