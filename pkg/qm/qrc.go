@@ -5,17 +5,17 @@ import (
 	"compress/flate"
 	"compress/gzip"
 	"compress/zlib"
-	"crypto/des"
 	"encoding/hex"
 	"errors"
 	"io"
+	"strconv"
 	"strings"
 )
 
 // qrcKey 是 QRC 的 3DES 密钥（24 字节 ASCII），逆向固定值，不可改。
 var qrcKey = []byte("!@#)(*$%123ZXC!@!@#)(NHL")
 
-// decryptQRC 解密 QRC：hex → 3DES-ECB → zlib。
+// decryptQRC 解密 QRC：hex → 3DES-ECB（QQ 专有实现）→ zlib。
 // 上游密文长度一定是 8 的倍数，不需要处理 padding。
 func decryptQRC(hexText string) (string, error) {
 	hexText = strings.TrimSpace(hexText)
@@ -26,20 +26,85 @@ func decryptQRC(hexText string) (string, error) {
 	if len(cipherText) == 0 {
 		return "", errors.New("空密文")
 	}
-	if len(cipherText)%des.BlockSize != 0 {
+	if len(cipherText)%8 != 0 {
 		return "", errors.New("密文长度不是 8 的倍数")
 	}
 
-	block, err := des.NewTripleDESCipher(qrcKey)
-	if err != nil {
-		return "", err
+	return inflateAny(qrcTripleDESDecrypt(cipherText, qrcKey))
+}
+
+// normalizeQRC 把上游的 QRC XML 容器拆成纯文本 QRC。
+//
+// 形态：<QrcInfos><QrcHeadInfo/><LyricInfo><Lyric_1 LyricContent="[ti:..]\n[0,500].."/></LyricInfo></QrcInfos>
+// LyricContent 里的换行可能是裸 \n，也可能是 &#10;，两种都要还原。
+func normalizeQRC(s string) string {
+	if !strings.Contains(s, "LyricContent=") {
+		return s
 	}
 
-	plain := make([]byte, len(cipherText))
-	for i := 0; i < len(cipherText); i += block.BlockSize() {
-		block.Decrypt(plain[i:i+block.BlockSize()], cipherText[i:i+block.BlockSize()])
+	const key = `LyricContent="`
+	idx := strings.Index(s, key)
+	if idx < 0 {
+		return s
 	}
-	return inflateAny(plain)
+	body := s[idx+len(key):]
+
+	// 属性结束标记；找不到就退回到最后一个引号
+	if end := strings.Index(body, `"/>`); end >= 0 {
+		body = body[:end]
+	} else if end := strings.LastIndex(body, `"`); end >= 0 {
+		body = body[:end]
+	}
+	return xmlUnescape(body)
+}
+
+// xmlUnescape 还原歌词里常见的 XML 实体。
+func xmlUnescape(s string) string {
+	if !strings.Contains(s, "&") {
+		return s
+	}
+
+	var b strings.Builder
+	b.Grow(len(s))
+	for i := 0; i < len(s); i++ {
+		if s[i] != '&' {
+			b.WriteByte(s[i])
+			continue
+		}
+		end := strings.IndexByte(s[i:], ';')
+		if end < 0 {
+			b.WriteByte(s[i])
+			continue
+		}
+		ent := s[i : i+end+1]
+		switch ent {
+		case "&#10;":
+			b.WriteByte('\n')
+		case "&#13;":
+			b.WriteByte('\r')
+		case "&#9;":
+			b.WriteByte('\t')
+		case "&quot;":
+			b.WriteByte('"')
+		case "&apos;":
+			b.WriteByte('\'')
+		case "&lt;":
+			b.WriteByte('<')
+		case "&gt;":
+			b.WriteByte('>')
+		case "&amp;":
+			b.WriteByte('&')
+		default:
+			if n, err := strconv.Atoi(strings.TrimSuffix(strings.TrimPrefix(ent, "&#"), ";")); err == nil &&
+				strings.HasPrefix(ent, "&#") {
+				b.WriteRune(rune(n))
+			} else {
+				b.WriteString(ent)
+			}
+		}
+		i += end
+	}
+	return b.String()
 }
 
 // inflateAny 依次尝试 zlib / raw deflate / gzip，任一成功且结果像歌词才返回。

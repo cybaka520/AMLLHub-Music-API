@@ -96,10 +96,10 @@ func (c *Client) GetLyric(ctx context.Context, songID int64, name, artist, album
 
 	main := decodeLyricField(string(raw.Lyric))
 	if raw.QRCT != 0 {
-		out.QRC = firstNonEmpty(decodeLyricField(string(raw.QRC)), main)
+		out.QRC = normalizeQRC(firstNonEmpty(decodeLyricField(string(raw.QRC)), main))
 	} else {
 		out.LRC = main
-		out.QRC = decodeLyricField(string(raw.QRC))
+		out.QRC = normalizeQRC(decodeLyricField(string(raw.QRC)))
 	}
 
 	// QRC 命中时再要一次 LRC 兜底，失败不影响。
